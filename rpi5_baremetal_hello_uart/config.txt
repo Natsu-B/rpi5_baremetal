@@ -1,0 +1,16 @@
+# enable uart console=serial0, 115200
+enable_uart=1
+
+# indicates that the elf file is custom firmware
+boot_load_flags=1
+
+# enable RP1 UART0 and doesn't reset RP1 before starting OS (RP1 is reset by default)
+enable_rpi1_uart=1
+
+# skip dtb checks
+os_check=0
+
+# kernel kick address
+kernel_address=0x200000
+[cm5]
+dtoverlay=dwc2,dr_mode=host
