@@ -3,6 +3,7 @@
 
 use core::{
     arch::{asm, global_asm},
+    fmt::{self, Write},
     panic::PanicInfo,
 };
 
@@ -49,18 +50,73 @@ fn is_write_fifo_full(addr: usize) -> bool {
     (unsafe { core::ptr::read_volatile((addr + UART_FR) as *const u16) } & (1 << 5)) != 0
 }
 
-fn print_u8(text: &'static str, address: usize) {
+fn print_str(text: &str, address: usize) {
     for c in text.chars() {
         while is_write_fifo_full(address) {}
         write_char(c, address);
     }
 }
 
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    ($fmt:expr) => (print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
+}
+
+pub fn _print(args: fmt::Arguments) {
+    let mut writer = UartWriter {};
+    writer.write_fmt(args).unwrap();
+}
+
+struct UartWriter;
+
+impl Write for UartWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        print_str(s, PL011_UART);
+        Ok(())
+    }
+}
+
+fn get_timer_counter() -> u64 {
+    let counter;
+    unsafe {
+        asm!("
+    isb
+    mrs {counter}, CNTPCT_EL0
+    ", counter = out(reg)counter)
+    };
+    counter
+}
+
+fn wait(current_frequency: u64, time: core::time::Duration) {
+    let micros = time.as_micros();
+    let start = get_timer_counter();
+    let wait_time = u128::from(current_frequency / 1000 / 1000) * micros;
+    while u128::from(get_timer_counter() - start) < wait_time {
+        unsafe { asm!("nop") };
+        core::hint::spin_loop();
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn main() -> ! {
     let text = "HelloWorld!\r\nPL011\r\n";
+    print_str(text, PL011_UART);
+    let current_frequency;
+    unsafe {
+        asm!("mrs {current_frequency}, CNTFRQ_EL0", current_frequency = out(reg)current_frequency);
+    }
+    println!("system counter frequency: {}Hz", current_frequency);
+
     loop {
-        print_u8(text, PL011_UART);
+        println!("Hello");
+        wait(current_frequency, core::time::Duration::from_secs(10));
+        core::hint::spin_loop();
     }
 }
 
