@@ -12,5 +12,9 @@ os_check=0
 
 # kernel kick address
 kernel_address=0x200000
+
+# resent firmware enables initial turbo by default, which may interfere with our initialization
+initial_turbo=0
+
 [cm5]
 dtoverlay=dwc2,dr_mode=host

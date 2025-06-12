@@ -1,0 +1,8 @@
+[target.aarch64-unknown-none]
+linker = "aarch64-linux-gnu-ld"
+runner = "./run.sh"
+
+rustflags = ["-C", "link-arg=-Taarch64.lds"]
+
+[build]
+target = "aarch64-unknown-none"
