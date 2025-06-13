@@ -4,10 +4,16 @@ use tock_registers::{
     registers::{ReadOnly, ReadWrite, WriteOnly},
 };
 
+#[derive(PartialEq)]
+pub enum UartNum {
+    Debug,
+    Rp1 { device_num: u8 },
+}
+
 // PL011 specification r1p5
 
 register_structs! {
-    pub PL011_Peripherals {
+    pub Pl011Peripherals {
     (0x0000 => pub data: ReadWrite<u32, UARTDR::Register>),
     (0x0004 => pub error_status: ReadWrite<u32>),
     (0x0008 => _reserved0008),
@@ -102,13 +108,13 @@ register_bitfields![
 ];
 
 pub struct Pl011Uart {
-    registers: &'static mut PL011_Peripherals,
+    registers: &'static mut Pl011Peripherals,
 }
 
 impl Pl011Uart {
     pub fn new(base_address: *const u32) -> Self {
         Self {
-            registers: unsafe { &mut *(base_address as *mut PL011_Peripherals) },
+            registers: unsafe { &mut *(base_address as *mut Pl011Peripherals) },
         }
     }
 
@@ -127,15 +133,15 @@ impl Pl011Uart {
         self.registers.line_control.modify(UARTLCR::FEN::CLEAR);
     }
 
-    pub fn init(&self, is_debug_port: bool, baudrate: u32) {
+    pub fn init(&self, uart_kind: UartNum, baudrate: u32) {
         self.flush();
         self.disabled();
 
         // calculate clock divisor
-        let uart_clk = if is_debug_port {
-            5000_0000
+        let uart_clk = if uart_kind == UartNum::Debug {
+            4400_0000
         } else {
-            4400_0000 // TODO mail box
+            5000_0000 // TODO mail box
         };
         assert!(uart_clk > 368_6400); // UART_CLK > 3.6864MHz is required
         let divisor_i = uart_clk / baudrate / 16; // integer part(16bit)

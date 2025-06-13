@@ -5,6 +5,7 @@ use core::{
 };
 
 pub const DEBUG_UART: OnceCell<Pl011Uart> = OnceCell::new();
+pub const RP1_UART: OnceCell<Pl011Uart> = OnceCell::new();
 
 #[macro_export]
 macro_rules! print {
@@ -27,6 +28,9 @@ struct UartWriter;
 impl Write for UartWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if let Some(writer) = DEBUG_UART.get() {
+            writer.write(s);
+        }
+        if let Some(writer) = RP1_UART.get() {
             writer.write(s);
         }
         Ok(())
