@@ -1,0 +1,13 @@
+[package]
+name = "rpi5_baremetal_hello"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tock-registers = "0.9.0"
+dtb = { path = "../dtb" }
+
+[profile.release]
+panic = 'abort'
+[profile.dev]
+panic = 'abort'

@@ -1,5 +1,4 @@
 use tock_registers::interfaces::ReadWriteable;
-use tock_registers::interfaces::Readable;
 use tock_registers::register_bitfields;
 use tock_registers::register_structs;
 use tock_registers::registers::{ReadOnly, ReadWrite};
@@ -225,6 +224,16 @@ impl Rp1GPIO {
         let io = self.io_bank0.gpio.get(gpio_num).unwrap();
         io.1.modify(GPIO_CTRL::OUTOVER::FromPeripheral + GPIO_CTRL::OEOVER::FromPeripheral);
         let pads = self.pads_bank0.gpio.get(gpio_num).unwrap();
-        pads.modify(GPIO::OD::CLEAR);
+        pads.modify(GPIO::OD::CLEAR + GPIO::PDE::CLEAR + GPIO::PUE::CLEAR);
+    }
+
+    pub fn gpio_enable(&self, gpio_num: usize) {
+        let gpio = self.io_bank0.gpio.get(gpio_num).unwrap();
+        gpio.1.modify(GPIO_CTRL::OEOVER::Enable);
+    }
+
+    pub fn gpio_disable(&self, gpio_num: usize) {
+        let gpio = self.io_bank0.gpio.get(gpio_num).unwrap();
+        gpio.1.modify(GPIO_CTRL::OEOVER::Disable);
     }
 }

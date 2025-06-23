@@ -1,3 +1,5 @@
+use core::fmt;
+
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields, register_structs,
@@ -141,7 +143,7 @@ impl Pl011Uart {
         let uart_clk = if uart_kind == UartNum::Debug {
             4400_0000
         } else {
-            5000_0000 // TODO mail box
+            4800_0000
         };
         assert!(uart_clk > 368_6400); // UART_CLK > 3.6864MHz is required
         let divisor_i = uart_clk / baudrate / 16; // integer part(16bit)
@@ -167,3 +169,15 @@ impl Pl011Uart {
         }
     }
 }
+
+impl fmt::Write for Pl011Uart {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write(s);
+        Ok(())
+    }
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        fmt::write(self, args)
+    }
+}
+
+unsafe impl Send for Pl011Uart {}

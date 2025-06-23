@@ -1,6 +1,5 @@
 /// ペリフェラルブロックを識別するためのenum
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-#[allow(clippy::upper_case_acronyms)] // 一部のブロック名がアクロニムのように見えるため許可
 pub enum Rp1Block {
     Sysinfo,
     Syscfg,

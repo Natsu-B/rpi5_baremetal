@@ -3,14 +3,9 @@
 version = 4
 
 [[package]]
-name = "dtb"
-version = "0.1.0"
-
-[[package]]
 name = "rpi5_baremetal_hello"
 version = "0.1.0"
 dependencies = [
- "dtb",
  "tock-registers",
 ]
 

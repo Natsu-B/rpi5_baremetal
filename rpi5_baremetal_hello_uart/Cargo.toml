@@ -1,7 +1,13 @@
-[package]
-name = "rpi5_baremetal_hello"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "bootloader",
+    "dtb",
+    #"alloc"
+]
+workspace.resolver = "3"
+build-std-features = ["compiler-builtins-mem"]
 
-[dependencies]
-tock-registers = "0.9.0"
+[profile.release]
+panic = 'abort'
+[profile.dev]
+panic = 'abort'
