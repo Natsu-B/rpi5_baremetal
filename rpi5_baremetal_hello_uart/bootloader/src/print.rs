@@ -9,7 +9,7 @@ static RP1_UART0: SpinLock<Option<Pl011Uart>> = SpinLock::new(None);
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::uart::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::print::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]

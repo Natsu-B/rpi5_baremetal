@@ -14,6 +14,8 @@ use crate::interfaces::{
 };
 use core::{
     arch::{asm, global_asm},
+    cell::OnceCell,
+    ops::ControlFlow,
     panic::PanicInfo,
 };
 use dtb::{self, DtbParser};
@@ -61,8 +63,13 @@ loop:
 #[unsafe(no_mangle)]
 extern "C" fn main() -> ! {
     let dtb = DtbParser::init(0x2000_0000).unwrap();
-    let pl011_debug_uart_addr = dtb.find_node(None, Some("pl011")).unwrap();
-    let debug_uart = Pl011Uart::new(pl011_debug_uart_addr.unwrap().0 as *const u32);
+    let pl011_debug_uart_addr = OnceCell::new();
+    dtb.find_node(None, Some("arm,pl011"), &mut |(address, _size)| {
+        pl011_debug_uart_addr.set(address).unwrap();
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    let debug_uart = Pl011Uart::new(*pl011_debug_uart_addr.get().unwrap() as *const u32);
     debug_uart.init(UartNum::Debug, 115200);
     debug_uart.write("debug uart starting...\r\n");
     // check if the PL011_OFFSET_ADDR is correct
