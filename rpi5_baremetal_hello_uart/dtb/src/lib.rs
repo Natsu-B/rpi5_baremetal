@@ -3,7 +3,8 @@
 use crate::big_endian::{CharStringIter, Dtb, FdtProperty};
 use core::{
     ffi::{CStr, c_char, c_str},
-    slice, usize,
+    ops::ControlFlow,
+    panic, slice, usize,
 };
 #[cfg(test)]
 use std::{collections::HashMap, string::String};
@@ -30,31 +31,29 @@ struct DeviceNode<'a> {
     child: Option<Vec<NonNull<&'a DeviceNode<'a>>>>,
 }
 
-struct SimpleDeviceNode {
-    parent_address_cells: Option<u32>,
-    parent_size_cells: Option<u32>,
+struct SimpleDeviceNode<'a> {
+    parent: Option<&'a SimpleDeviceNode<'a>>,
     address_cells: u32,
     size_cells: u32,
-    reg: Option<usize>,
+    reg: Option<(usize, u32)>,
     ranges: Option<usize>,
 }
 
-impl SimpleDeviceNode {
-    const ADDRESS_CELLS: &str = "#address-cells";
-    const SIZE_CELLS: &str = "#size-cells";
-    const PROP_COMPATIBLE: &str = "compatible";
-    const PROP_DEVICE_NAME: &str = "device_type";
-    const PROP_REG: &str = "reg";
-    const PROP_RANGES: &str = "ranges";
+impl<'a> SimpleDeviceNode<'a> {
+    const ADDRESS_CELLS: &'static str = "#address-cells";
+    const SIZE_CELLS: &'static str = "#size-cells";
+    const PROP_COMPATIBLE: &'static str = "compatible";
+    const PROP_DEVICE_NAME: &'static str = "device_type";
+    const PROP_REG: &'static str = "reg";
+    const PROP_RANGES: &'static str = "ranges";
 
-    pub fn new(parent: Option<&SimpleDeviceNode>) -> Self {
+    pub fn new<'b: 'a>(parent: Option<&'b SimpleDeviceNode>) -> Self {
         Self {
-            parent_address_cells: parent.map(|e| e.address_cells),
-            parent_size_cells: parent.map(|e| e.size_cells),
             address_cells: 2,
             size_cells: 1,
             reg: None,
             ranges: None,
+            parent,
         }
     }
 
@@ -110,17 +109,14 @@ impl SimpleDeviceNode {
                 None
             }
             Self::PROP_REG => {
-                self.reg = Some(*address);
+                self.reg = Some((*address, property.get_property_len()));
                 Some(
-                    self.parent_address_cells
-                        .ok_or("'reg' property should not be located at the root node")?
-                        as usize
-                        * size_of::<u32>()
-                        + self
-                            .parent_size_cells
-                            .ok_or("'reg' property should not be located at the root node")?
-                            as usize
-                            * size_of::<u32>(),
+                    self.parent
+                        .ok_or("'reg' property should not be located at the root node")
+                        .map(|node| {
+                            node.address_cells as usize * size_of::<u32>()
+                                + node.size_cells as usize * size_of::<u32>()
+                        })?,
                 )
             }
             Self::PROP_RANGES => {
@@ -128,7 +124,7 @@ impl SimpleDeviceNode {
                 if property.get_property_len() != 0 {
                     pr_debug!(
                         "parent address: {}, child address: {}, child_size: {}",
-                        self.parent_address_cells.unwrap(),
+                        self.parent.unwrap().address_cells,
                         self.address_cells,
                         self.size_cells
                     );
@@ -154,17 +150,19 @@ impl SimpleDeviceNode {
         Ok(result)
     }
 
-    fn read_reg_internal(&self) -> Result<Option<(usize, usize)>, &'static str> {
+    fn read_reg_internal(&self, offset: usize) -> Result<Option<(usize, usize)>, &'static str> {
         if let Some(reg) = self.reg {
-            let address_cells = self.parent_address_cells.unwrap();
-            let size_cells = self.parent_size_cells.unwrap();
+            let (address_cells, size_cells) = self
+                .parent
+                .map(|node| (node.address_cells, node.size_cells))
+                .unwrap();
             if address_cells as usize > (size_of::<usize>() / size_of::<u32>())
                 || size_cells as usize > (size_of::<usize>() / size_of::<u32>())
             {
                 return Err("address or size cells overflow usize");
             }
-            let address = Dtb::read_regs(reg, address_cells)?;
-            let len = Dtb::read_regs(reg + address.1, size_cells)?;
+            let address = Dtb::read_regs(reg.0 + offset, address_cells)?;
+            let len = Dtb::read_regs(reg.0 + offset + address.1, size_cells)?;
             pr_debug!("reg: address: {:#x}, size: {:#x}", address.0, len.0);
             return Ok(Some((address.0, len.0)));
         }
@@ -174,18 +172,8 @@ impl SimpleDeviceNode {
     fn read_round_internal(&self) -> Result<Option<(usize, usize, usize)>, &'static str> {
         if let Some(reg) = self.ranges {
             let child_address = Dtb::read_regs(reg, self.address_cells)?;
-            #[cfg(test)]
-            assert_eq!(
-                child_address.1,
-                self.address_cells as usize * size_of::<u32>()
-            );
             let parent_address =
-                Dtb::read_regs(reg + child_address.1, self.parent_address_cells.unwrap())?;
-            #[cfg(test)]
-            assert_eq!(
-                parent_address.1,
-                self.parent_address_cells.unwrap() as usize * size_of::<u32>()
-            );
+                Dtb::read_regs(reg + child_address.1, self.parent.unwrap().address_cells)?;
             let parent_len =
                 Dtb::read_regs(reg + child_address.1 + parent_address.1, self.size_cells)?;
             #[cfg(test)]
@@ -195,16 +183,14 @@ impl SimpleDeviceNode {
         Ok(None)
     }
 
-    pub fn calculate_address(
+    pub fn calculate_address_internal(
         &self,
-        address: Option<&(usize, usize)>,
+        address: &(usize, usize),
     ) -> Result<(usize, usize), &'static str> {
-        if let Some(s) = address {
-            pr_debug!("tmp{:#x}", s.0 + s.1);
+        let address_child = {
             if self.ranges.is_some() {
-                let parent = self.read_round_internal()?.unwrap(); // child address, parent address, child length
-                pr_debug!("{:#x} ", parent.0 + parent.2);
-                if parent.0 + parent.2 < s.0 + s.1 {
+                let parent = self.read_round_internal()?.unwrap();
+                if parent.0 + parent.2 < address.0 + address.1 {
                     return Err("ranges size overflow");
                 }
                 pr_debug!(
@@ -213,19 +199,54 @@ impl SimpleDeviceNode {
                     parent.1,
                     parent.2
                 );
-                Ok((s.0 - parent.0 + parent.1, s.1))
-            } else if self.reg.is_some() {
-                let parent = self.read_reg_internal()?.unwrap();
-                if parent.1 < s.0 + s.1 {
-                    return Err("reg size overflow");
-                }
-                Ok((parent.0 + s.0, s.1))
+                (address.0 - parent.0 + parent.1, address.1)
             } else {
-                Ok(*s)
+                *address
             }
-        } else {
-            Ok(self.read_reg_internal()?.unwrap()) // unwrap is unreachable
+        };
+        if let Some(s) = self.parent {
+            return s.calculate_address_internal(&address_child);
         }
+        return Ok(address_child);
+    }
+}
+
+struct DeviceAddressIter<'a> {
+    prop: &'a SimpleDeviceNode<'a>,
+    remain: Option<u32>,
+}
+
+impl<'a> DeviceAddressIter<'a> {
+    fn new(prop: &'a SimpleDeviceNode) -> Self {
+        Self { prop, remain: None }
+    }
+    fn next_internal(&mut self) -> Result<Option<(usize, usize)>, &'static str> {
+        let (_address, size) = self.prop.reg.ok_or("reg property is none")?;
+        let remain = self.remain.get_or_insert(size);
+        if *remain == 0 {
+            return Ok(None);
+        }
+        pr_debug!("read reg offset at: {}", size - *remain);
+        let result = self.prop.calculate_address_internal(
+            &self
+                .prop
+                .read_reg_internal(size as usize - *remain as usize)?
+                .ok_or("reg property is none")?,
+        )?;
+        *remain -= self
+            .prop
+            .parent
+            .map(|parent| (parent.address_cells + parent.size_cells) * size_of::<u32>() as u32)
+            .unwrap();
+        return Ok(Some(result));
+    }
+}
+
+impl<'a> Iterator for DeviceAddressIter<'a> {
+    type Item = Result<(usize, usize), &'static str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_internal().transpose()
     }
 }
 
@@ -236,63 +257,108 @@ impl DtbParser {
     const FDT_END_NODE: [u8; Self::SIZEOF_FDT_TOKEN] = [0x00, 0x00, 0x00, 0x02];
     const FDT_PROP: [u8; Self::SIZEOF_FDT_TOKEN] = [0x00, 0x00, 0x00, 0x03];
     const FDT_NOP: [u8; Self::SIZEOF_FDT_TOKEN] = [0x00, 0x00, 0x00, 0x04];
-    const FDT_END: [u8; Self::SIZEOF_FDT_TOKEN] = [0x00, 0x00, 0x00, 0x05];
+    const FDT_END: [u8; Self::SIZEOF_FDT_TOKEN] = [0x00, 0x00, 0x00, 0x09];
     pub fn init(dtb_address: usize) -> Result<Self, &'static str> {
         let dtb = Dtb::new(dtb_address)?;
         let parser = Self { dtb_header: dtb };
         return Ok(parser);
     }
     pub fn skip_nop(&self, address: &mut usize) {
-        while Self::get_types(address) == Self::FDT_NOP {
+        while *address < self.dtb_header.get_struct_end_address()
+            && Self::get_types(address) == Self::FDT_NOP
+        {
             *address += Self::SIZEOF_FDT_TOKEN;
         }
     }
+
     pub fn get_types(address: &usize) -> [u8; 4] {
         unsafe { *(*address as *const [u8; Self::SIZEOF_FDT_TOKEN]) }
     }
 
-    fn find_node_recursive(
+    pub fn find_node<F>(
+        &self,
+        device_name: Option<&str>,
+        compatible_name: Option<&str>,
+        f: &mut F,
+    ) -> Result<ControlFlow<()>, &'static str>
+    where
+        F: FnMut((usize, usize)) -> ControlFlow<()>,
+    {
+        if device_name.is_some() && compatible_name.is_some()
+            || device_name.is_none() && compatible_name.is_none()
+        {
+            return Err("device name and compatible name cannot be searched for at the same time");
+        }
+        let mut pointer = self.dtb_header.get_struct_start_address();
+        self.skip_nop(&mut pointer);
+        let result =
+            self.find_node_recursive(&mut pointer, device_name, compatible_name, None, f)?;
+        if Self::get_types(&pointer) != Self::FDT_END {
+            pr_debug!(
+                "failed to parse all of the dtb node: {:?}",
+                Self::get_types(&pointer)
+            );
+            return Err("failed to parse all of the dtb node");
+        }
+        return Ok(result);
+    }
+
+    fn find_node_recursive<F>(
         &self,
         pointer: &mut usize,
         device_name: Option<&str>,
         compatible_name: Option<&str>,
         node_info: Option<&SimpleDeviceNode>,
-    ) -> Result<Option<(usize, usize)>, &'static str> {
-        let mut prop = SimpleDeviceNode::new(node_info);
+        f: &mut F,
+    ) -> Result<ControlFlow<()>, &'static str>
+    where
+        F: FnMut((usize, usize)) -> ControlFlow<()>,
+    {
         if Self::get_types(&pointer) != Self::FDT_BEGIN_NODE {
             return Err("pointer is not begin node");
         }
+        let mut prop = SimpleDeviceNode::new(node_info);
         *pointer += Self::SIZEOF_FDT_TOKEN;
         let node_name = Dtb::read_char_str(*pointer)?;
-        pr_debug!("FDT_BEGIN_NODE node_name: {}", node_name);
         *pointer +=
             (node_name.len() + 1/* null terminator */).next_multiple_of(Self::ALIGNMENT as usize);
-        let mut find = false;
+        pr_debug!("node name: {}", node_name);
+        let mut find_in_this_node = false;
         loop {
-            pr_debug!("FDT types: {:?}", Self::get_types(pointer));
             match Self::get_types(pointer) {
                 Self::FDT_NOP => *pointer += Self::SIZEOF_FDT_TOKEN,
-                Self::FDT_END_NODE => {
-                    *pointer += Self::SIZEOF_FDT_TOKEN;
-                    if find {
-                        return Ok(Some(prop.calculate_address(None)?));
-                    }
-                    return Ok(None);
-                }
-                Self::FDT_BEGIN_NODE => {
-                    if let Some(s) = self.find_node_recursive(
-                        pointer,
-                        device_name,
-                        compatible_name,
-                        Some(&prop),
-                    )? {
-                        return Ok(Some(prop.calculate_address(Some(&s))?));
-                    }
-                }
                 Self::FDT_PROP => {
                     if prop.parse_prop(self, pointer, device_name, compatible_name)? {
-                        find = true;
+                        find_in_this_node = true;
                     }
+                }
+                Self::FDT_BEGIN_NODE | Self::FDT_END_NODE => break,
+                _ => return Err("Unexpected token inside node"),
+            }
+        }
+
+        if find_in_this_node {
+            for address in DeviceAddressIter::new(&prop) {
+                if f(address?).is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+        }
+
+        loop {
+            match Self::get_types(pointer) {
+                Self::FDT_NOP => *pointer += Self::SIZEOF_FDT_TOKEN,
+                Self::FDT_BEGIN_NODE => {
+                    if self
+                        .find_node_recursive(pointer, device_name, compatible_name, Some(&prop), f)?
+                        .is_break()
+                    {
+                        return Ok(ControlFlow::Break(()));
+                    }
+                }
+                Self::FDT_END_NODE => {
+                    *pointer += Self::SIZEOF_FDT_TOKEN;
+                    return Ok(ControlFlow::Continue(()));
                 }
                 _ => {
                     pr_debug!(
@@ -304,23 +370,6 @@ impl DtbParser {
                 }
             }
         }
-    }
-    pub fn find_node(
-        &self,
-        device_name: Option<&str>,
-        compatible_name: Option<&str>,
-    ) -> Result<Option<(usize, usize)>, &'static str> {
-        if device_name.is_some() && compatible_name.is_some()
-            || device_name.is_none() && compatible_name.is_none()
-        {
-            return Err("device name and compatible name cannot be searched for at the same time");
-        }
-        let mut pointer = self.dtb_header.get_struct_start_address();
-        return self.find_node_recursive(&mut pointer, device_name, compatible_name, None);
-    }
-    #[cfg(alloc)]
-    fn parse(&self) -> DeviceNode {
-        unimplemented!();
     }
 }
 
@@ -466,11 +515,13 @@ mod big_endian {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
     use super::*;
+    use core::result;
+    use std::cell::RefCell;
+
     const PL011_DEBUG_UART_ADDRESS: usize = 0x10_7D00_1000;
     const PL011_DEBUG_UART_SIZE: usize = 0x200;
     const MEMORY_ADDRESS: usize = 0x0;
@@ -478,25 +529,41 @@ mod tests {
     #[test]
     fn it_works() {
         let test_data = std::fs::read("test/test.dtb").expect("failed to load dtb files");
-        pr_debug!(
-            "load test file. Size: {} address: 0x{:#?}",
-            test_data.len(),
-            test_data.as_ptr()
-        );
-        let mut test_data_addr = test_data.as_ptr() as usize;
+        let test_data_addr = test_data.as_ptr() as usize;
         let parser = DtbParser::init(test_data_addr).unwrap();
-        let pl011 = parser.find_node(None, Some("arm,pl011")).unwrap().unwrap();
-        pr_debug!("PL011: address:{:#x}, size: {:#x}", pl011.0, pl011.1);
-        assert_eq!(PL011_DEBUG_UART_ADDRESS, pl011.0);
-        assert_eq!(PL011_DEBUG_UART_SIZE, pl011.1);
-        let memory = parser.find_node(Some("memory"), None).unwrap().unwrap();
-        pr_debug!("memory: address{:#x}, size: {:#x}", memory.0, memory.1);
-        assert_eq!(MEMORY_ADDRESS, memory.0);
-        assert_eq!(MEMORY_SIZE, memory.1);
-        assert_eq!(
-            parser.find_node(None, Some("None")).unwrap().is_none(),
-            true
-        );
+
+        let mut counter = 0;
+        parser
+            .find_node(None, Some("arm,pl011"), &mut |(address, size)| {
+                pr_debug!("find pl011 node, address: {} size: {}", address, size);
+                assert_eq!(address, PL011_DEBUG_UART_ADDRESS);
+                assert_eq!(size, PL011_DEBUG_UART_SIZE);
+                counter += 1;
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(counter, 1);
+
+        counter = 0;
+        parser
+            .find_node(Some("memory"), None, &mut |(address, size)| {
+                pr_debug!("find memory node, address: {} size: {}", address, size);
+                assert_eq!(address, MEMORY_ADDRESS);
+                assert_eq!(size, MEMORY_SIZE);
+                counter += 1;
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(counter, 1);
+        counter = 0;
+        parser
+            .find_node(None, Some("arm,gic-400"), &mut |(address, size)| {
+                pr_debug!("find gic node, address: {} size: {}", address, size);
+                counter += 1;
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(counter, 4);
     }
 }
 
