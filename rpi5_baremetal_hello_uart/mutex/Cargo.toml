@@ -1,12 +1,11 @@
 [package]
-name = "rpi5_baremetal_hello"
+name = "mutex"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tock-registers = "0.9.0"
-dtb = { path = "../dtb" }
-mutex = { path = "../mutex"}
+[dev-dependencies]
+core_affinity = "0.8.3"
 
 [profile.release]
 panic = 'abort'

@@ -2,7 +2,7 @@ use core::fmt::{self, Write};
 
 use crate::PL011_UART_ADDR;
 use crate::interfaces::pl011::Pl011Uart;
-use crate::spinlock::SpinLock;
+use mutex::SpinLock;
 
 static DEBUG_UART: SpinLock<Option<Pl011Uart>> = SpinLock::new(None);
 static RP1_UART0: SpinLock<Option<Pl011Uart>> = SpinLock::new(None);

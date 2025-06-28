@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "bootloader",
-    "dtb",
-    #"alloc"
-]
+members = ["alloc", "bootloader", "dtb", "mutex"]
 workspace.resolver = "3"
 build-std-features = ["compiler-builtins-mem"]
 

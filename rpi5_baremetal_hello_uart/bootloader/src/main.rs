@@ -6,7 +6,6 @@
 #[macro_use]
 pub mod print;
 pub mod interfaces;
-pub mod spinlock;
 mod systimer;
 use crate::interfaces::{
     pl011::{Pl011Uart, UartNum},
@@ -65,7 +64,7 @@ extern "C" fn main() -> ! {
     let dtb = DtbParser::init(0x2000_0000).unwrap();
     let pl011_debug_uart_addr = OnceCell::new();
     dtb.find_node(None, Some("arm,pl011"), &mut |(address, _size)| {
-        pl011_debug_uart_addr.set(address).unwrap();
+        let _ = pl011_debug_uart_addr.set(address);
         ControlFlow::Continue(())
     })
     .unwrap();
