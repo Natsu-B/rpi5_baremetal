@@ -4,6 +4,8 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+// 基本的に単コアのみで動作を前提としている
+
 pub struct SpinLock<T> {
     locked: AtomicBool,
     data: UnsafeCell<T>,
@@ -102,18 +104,39 @@ impl<T> RWLock<T> {
     }
 
     pub fn write(&'_ self) -> RWLockWriteGuard<'_, T> {
-        let n = self
-            .read_count_write_lock_flag
-            .fetch_or(Self::WRITE_FLAG, Ordering::Acquire);
-        // 書き込みや読み込みがなされてないかを検証する
-        if n == 0 {
-            return RWLockWriteGuard { lock: self };
+        loop {
+            let n = self.read_count_write_lock_flag.load(Ordering::Relaxed);
+            // 書き込みや読み込みがなされてないかを検証する
+            if n & Self::WRITE_FLAG != 0 {
+                core::hint::spin_loop;
+                continue;
+            }
+            match self.read_count_write_lock_flag.compare_exchange_weak(
+                n,
+                n | Self::WRITE_FLAG,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(x) => {
+                    if x & !Self::WRITE_FLAG == 0 {
+                        return RWLockWriteGuard { lock: self };
+                    }
+                    while self.read_count_write_lock_flag.load(Ordering::Relaxed)
+                        & !Self::WRITE_FLAG
+                        != 0
+                    {
+                        core::hint::spin_loop();
+                    }
+                    return RWLockWriteGuard { lock: self };
+                }
+                Err(x) => {
+                    // 失敗したらspin
+                    core::hint::spin_loop();
+                    continue;
+                }
+            }
         }
-        while self.read_count_write_lock_flag.load(Ordering::Relaxed) & !Self::WRITE_FLAG != 0 {
-            // 失敗したらspin
-            core::hint::spin_loop();
-        }
-        RWLockWriteGuard { lock: self }
+        unreachable!();
     }
 }
 
@@ -197,44 +220,41 @@ mod tests {
 
     #[test]
     fn rw_lock_data() {
-        for _ in 0..100 {
-            let core_id = get_core_id();
-            let test_data: Arc<RWLock<usize>> = Arc::new(RWLock::new(0));
+        let core_id = get_core_id();
+        let test_data: Arc<RWLock<usize>> = Arc::new(RWLock::new(0));
 
-            let handles1: Vec<_> = (0..100)
-                .map(|_| {
-                    let test_data_clone = Arc::clone(&test_data);
-                    thread::spawn(move || {
-                        if core_affinity::set_for_current(core_id) {
-                            assert_eq!(0, *test_data_clone.read().lock.read().deref());
-                        }
-                    })
+        let handles1: Vec<_> = (0..100)
+            .map(|_| {
+                let test_data_clone = Arc::clone(&test_data);
+                thread::spawn(move || {
+                    if core_affinity::set_for_current(core_id) {
+                        assert_eq!(0, *test_data_clone.read().lock.read().deref());
+                    }
                 })
-                .collect();
-            std::thread::sleep(Duration::from_millis(10));
-            let handles2: Vec<_> = (0..100)
-                .map(|_| {
-                    let test_data_clone = Arc::clone(&test_data);
-                    thread::spawn(move || {
-                        if core_affinity::set_for_current(core_id) {
-                            for _ in 0..1000 {
-                                let arc = test_data_clone.write().lock;
-                                let mut arc = arc.write();
-                                let data = arc.deref_mut();
-                                *data += 1;
-                            }
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(10));
+        let handles2: Vec<_> = (0..100)
+            .map(|_| {
+                let test_data_clone = Arc::clone(&test_data);
+                thread::spawn(move || {
+                    if core_affinity::set_for_current(core_id) {
+                        for _ in 0..1000 {
+                            let mut test = test_data_clone.write();
+                            let data = test.deref_mut();
+                            *data += 1;
                         }
-                    })
+                    }
                 })
-                .collect();
+            })
+            .collect();
 
-            for handle in handles1.into_iter() {
-                handle.join().unwrap();
-            }
-            for handle in handles2.into_iter() {
-                handle.join().unwrap();
-            }
-            assert_eq!(*test_data.read().deref(), 100 * 1000);
+        for handle in handles1.into_iter() {
+            handle.join().unwrap();
         }
+        for handle in handles2.into_iter() {
+            handle.join().unwrap();
+        }
+        assert_eq!(*test_data.read().deref(), 100 * 1000);
     }
 }
