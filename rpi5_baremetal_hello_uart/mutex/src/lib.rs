@@ -197,42 +197,44 @@ mod tests {
 
     #[test]
     fn rw_lock_data() {
-        let core_id = get_core_id();
-        let test_data: Arc<RWLock<usize>> = Arc::new(RWLock::new(0));
+        for _ in 0..100 {
+            let core_id = get_core_id();
+            let test_data: Arc<RWLock<usize>> = Arc::new(RWLock::new(0));
 
-        let handles1: Vec<_> = (0..100)
-            .map(|_| {
-                let test_data_clone = Arc::clone(&test_data);
-                thread::spawn(move || {
-                    if core_affinity::set_for_current(core_id) {
-                        assert_eq!(0, *test_data_clone.read().lock.read().deref());
-                    }
-                })
-            })
-            .collect();
-        std::thread::sleep(Duration::from_millis(10));
-        let handles2: Vec<_> = (0..100)
-            .map(|_| {
-                let test_data_clone = Arc::clone(&test_data);
-                thread::spawn(move || {
-                    if core_affinity::set_for_current(core_id) {
-                        for _ in 0..1000 {
-                            let arc = test_data_clone.write().lock;
-                            let mut arc = arc.write();
-                            let data = arc.deref_mut();
-                            *data += 1;
+            let handles1: Vec<_> = (0..100)
+                .map(|_| {
+                    let test_data_clone = Arc::clone(&test_data);
+                    thread::spawn(move || {
+                        if core_affinity::set_for_current(core_id) {
+                            assert_eq!(0, *test_data_clone.read().lock.read().deref());
                         }
-                    }
+                    })
                 })
-            })
-            .collect();
+                .collect();
+            std::thread::sleep(Duration::from_millis(10));
+            let handles2: Vec<_> = (0..100)
+                .map(|_| {
+                    let test_data_clone = Arc::clone(&test_data);
+                    thread::spawn(move || {
+                        if core_affinity::set_for_current(core_id) {
+                            for _ in 0..1000 {
+                                let arc = test_data_clone.write().lock;
+                                let mut arc = arc.write();
+                                let data = arc.deref_mut();
+                                *data += 1;
+                            }
+                        }
+                    })
+                })
+                .collect();
 
-        for handle in handles1.into_iter() {
-            handle.join().unwrap();
+            for handle in handles1.into_iter() {
+                handle.join().unwrap();
+            }
+            for handle in handles2.into_iter() {
+                handle.join().unwrap();
+            }
+            assert_eq!(*test_data.read().deref(), 100 * 1000);
         }
-        for handle in handles2.into_iter() {
-            handle.join().unwrap();
-        }
-        assert_eq!(*test_data.read().deref(), 100 * 1000);
     }
 }

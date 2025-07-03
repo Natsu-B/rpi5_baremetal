@@ -1,4 +1,4 @@
 ```rust
-cargo run
+cargo xrun
 ```
-で作られたkernel8.imgとconfig.txtをfat32な先頭パーティションに入れるとブートされ、UARTのdebug portから出力されます。
+で作られたbuild/kernel8.imgとconfig.txtをfat32な先頭パーティションに入れるとブートされ、UARTのdebug portから出力されます。
